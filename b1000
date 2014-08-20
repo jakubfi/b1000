@@ -1,0 +1,237 @@
+#!/usr/bin/python
+
+# Copyright (c) 2012 Jakub Filipowicz <jakubf@gmail.com>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+
+import os
+import sys
+import re
+import logging as l
+import subprocess
+import optparse
+import pickle
+import time
+
+from bconfig import Config
+from bpre import PreDispatcher
+from bcopy import CopyDispatcher
+from bpost import PostDispatcher
+from bjob import Job
+
+default_config = "/etc/b1000/b1000.cfg"
+default_log_format = '%(asctime)-15s %(levelname)-7s [%(threadName)-10s] %(message)s'
+default_log_file = '/dev/stdout'
+default_log_level = 'INFO'
+
+params = optparse.Values
+user_jobs = []
+
+__version__ = "0.1"
+
+# ------------------------------------------------------------------------
+def parse_cmdline():
+    parser = optparse.OptionParser(description='b1000 version ' + __version__, version="%prog " + __version__, usage="b1000 [options] [job[/instance]] [job[/instance]] ...")
+    parser.add_option('-f', '--cfg', help='alternative configuration file')
+    parser.add_option('-c', '--copy', action="store_true", default=False, help='Retry failed copies')
+    params, args = parser.parse_args()
+
+    user_jobs = []
+    for j in args:
+        ji = j.split("/")
+        if len(ji) == 1:
+            user_jobs.append(["job:"+j, ''])
+        elif len(ji) == 2:
+            if ji[1] == '':
+                raise SyntaxError("Please specify jobs as 'job' or 'job/instance'")
+            user_jobs.append(["job:"+ji[0], ji[1]])
+        else:
+            raise SyntaxError("Please specify jobs as 'job' or 'job/instance'")
+
+    return params, user_jobs
+
+# ------------------------------------------------------------------------
+def read_config():
+    params_required = ['status_dir']
+    params_allowed = ['log_format', 'log_level', 'log_file', 'backup_dir', 'scripts_dir', 'copy_retries', 'copy_retry_min_sleep']
+
+    if params.cfg is None:
+        params.cfg = default_config
+    cfg = Config(params.cfg)
+
+    cfg.validate('global', params_required, params_allowed)
+
+    return cfg
+
+# ------------------------------------------------------------------------
+def setup_logging():
+    log_format = cfg.get_def('global', 'log_format', default_log_format)
+    log_file = cfg.get_def('global', 'log_file', default_log_file)
+    log_level = cfg.get_def('global', 'log_level', default_log_level)
+    l.basicConfig(format=log_format, filename=log_file, level=l.__dict__[log_level])
+
+# ------------------------------------------------------------------------
+def find_instances(cfg, job):
+
+    instances_list = ['']
+
+    try:
+        instances = cfg.get_exec(job, "instances")
+        if instances:
+            instances_list = re.findall("([a-zA-Z][-_a-zA-Z0-9]*)", instances)
+    except:
+        pass
+
+    return instances_list
+
+# ------------------------------------------------------------------------
+def enumerate_jobs(cfg, jobs):
+
+    for j in jobs:
+
+        j_name = re.sub("job:", "", j[0])
+
+        # check if job is configured
+        if not cfg.has_section(j[0]):
+            l.error("No job '%s' in configuration. Skipping.", j_name)
+            continue
+
+        instances = []
+
+        # instance provided, use it
+        if j[1] != '':
+            instances = [j[1]]
+        # no instance provided, check configuration and use instances if available
+        else:
+            instances = find_instances(cfg, j[0])
+
+        for i in instances:
+            l.debug("Adding job '%s' instance '%s' to queue" % (j_name, str(i)))
+            pre_dp.queue((cfg, j[0], i))
+
+# ------------------------------------------------------------------------
+def load_failed_jobs(cfg):
+    status_dir = cfg.get('global', "status_dir")
+    fl = os.listdir(status_dir)
+    if len(fl) == 0:
+        l.info("No job statuses found, nothing to retry")
+        return
+
+    l.info("Retrying jobs failed on copy")
+
+    for f in fl:
+        if f.endswith(".b1ks"):
+            job_filename = '%s/%s' % (status_dir, f)
+            l.debug("Loading job status from file '%s'" % job_filename)
+            try:
+                jobf = open(job_filename, 'rb')
+                job = pickle.load(jobf)
+                jobf.close()
+
+                start_time = time.strftime("%Y-%m-%d %H:%M:%S", job.start_time)
+
+                # reset copying status for permanently failed destinations
+                for d in job.dest:
+                    if d.status == Job.COPY_STATUS_FAILED:
+                        d.set_status(Job.COPY_STATUS_INIT)
+
+                l.info("Putting job '%s' instance '%s' (failed %s) back to job queue" % (job.real_name, job.instance, start_time))
+                copy_dp.queue(job)
+            except Exception, e:
+                l.error("Cannot load job state from '%s'. Skipping. Exception: %s" % (job_filename, str(e)))
+
+
+# ------------------------------------------------------------------------
+# --- MAIN ---------------------------------------------------------------
+# ------------------------------------------------------------------------
+
+try:
+    params, user_jobs = parse_cmdline()
+except Exception, e:
+    print "Could not parse command line. Exception: %s" % str(e)
+    sys.exit(1)
+
+try:
+    cfg = read_config()
+except Exception, e:
+    print "Could not read config file '%s'. Exception: %s" % (params.cfg, str(e))
+    sys.exit(1)
+
+setup_logging()
+
+l.info("B1000 starting up...")
+
+# create dispatchers
+try:
+    post_dp = PostDispatcher("PostDp", None)
+    copy_dp = CopyDispatcher("CopyDp", post_dp)
+    pre_dp = PreDispatcher("PreDp", copy_dp)
+except Exception, e:
+    l.fatal("Error starting dispatchers: %s" % str(e))
+    sys.exit(1)
+
+# retry failed copies?
+if params.copy:
+    try:
+        load_failed_jobs(cfg)
+    except Exception, e:
+        l.fatal("Can't read status files. Exception: %s" % (str(e)))
+        sys.exit(1)
+# fill job queue with jobs to do (either provided by user or all read from configuration)
+else:
+    try:
+        if user_jobs:
+            enumerate_jobs(cfg, user_jobs)
+        else:
+            enumerate_jobs(cfg, cfg.jobs)
+    except Exception, e:
+        l.fatal("Exception while preparing jobs: %s" % str(e))
+
+pre_dp.finish()
+
+# run everything
+try:
+    post_dp.start()
+    try:
+        copy_dp.start()
+        try:
+            pre_dp.start()
+        except Exception, e:
+            l.fatal("Error starting Pre Distpatcher")
+            post_dp.finish()
+            copy_dp.finish()
+            sys.exit(1)
+    except Exception, e:
+        l.fatal("Error starting Copy Distpatcher")
+        post_dp.finish()
+        sys.exit(1)
+except Exception, e:
+    l.fatal("Error starting Post Distpatcher")
+    sys.exit(1)
+
+l.debug("B1000 main thread waiting for dispatchers to finish the job...")
+pre_dp.join()
+l.debug("Pre Dispatcher done")
+copy_dp.join()
+l.debug("Copy Dispatcher done")
+post_dp.join()
+l.debug("Post Dispatcher done")
+
+l.info("B1000 exiting...")
+
+
+
+# vim: tabstop=4 expandtab shiftwidth=4 softtabstop=4

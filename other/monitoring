@@ -1,0 +1,7 @@
+* czy wszystkie hosty z planu mają backup
+* czy wszystkie zbackupowane hosty mają plan
+* czy backup zakończył się poprawnie
+* czy wszystkie kopie zakończyły się poprawnie
+* czy każda baza ma backup binlogów
+* czy żaden slave nie był opóźniony
+

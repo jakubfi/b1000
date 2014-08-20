@@ -1,0 +1,5 @@
+DEBUG	- śledzenie wszystkich kroków programu (kilka na funkcję)
+INFO	- "nieinwazyjne" dla logóe informacje o kolejnych krokach działania programu, pokazują "flow"
+WARNING	- coś się nie udało, ale jeszcze będziemy próbować, lub nie udało się coś, co nie wpływa na kluczowy wynik pracy programu
+ERROR	- zadanie się nie udało, ale pracujemy dalej
+FATAL	- nie można kontynuować pracy programu

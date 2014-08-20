@@ -1,0 +1,5 @@
+* error handling
+* czy status joba się źle nie nadpisuje (WARNING -> OK, podczas gdy jest warning wciąż)
+* czy przy -c nie skonczymy kopiować zanim się wypełk kolejka?
+* czy nie potrzeba lockfile-a? (ale możemy chcieć odpalać b100 równolegle dla różnych jobów)
+* co sprzątać przed/po passive/poll?

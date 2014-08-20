@@ -1,0 +1,5 @@
+#!/bin/bash
+
+echo cleaning up instance $1 in $2
+sleep 3
+echo cleaning done
