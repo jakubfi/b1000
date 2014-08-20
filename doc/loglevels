@@ -1,0 +1,7 @@
+Loglevels as B1000 understands them:
+
+DEBUG	- trace all important program steps (several per function)
+INFO	- "not invasive" program steps that show "flow" of the execution
+WARNING	- something went wrong, but we will keep trying our best OR something non-essential didn't work (result is going to be fine)
+ERROR	- some task failed, but we will continue with other tasks
+FATAL	- cannot continue program, we're screwed
